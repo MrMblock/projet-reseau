@@ -17,7 +17,7 @@ template="local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
 storage="local-lvm"
 gateway="10.0.2.15"
 bridge="vmbr0"
-read -sp "Entrez le mot de passe pour la vm HAProxy: " password
+read -sp "Entrez le mot de passe pour la VM HAProxy: " password
 
 # Déploiement de HAProxy
 haproxy_id=$(generate_id 100)
@@ -38,8 +38,16 @@ pct create $haproxy_id $template \
 pct start $haproxy_id
 sleep 10
 
-# Installer HAProxy
-pct exec $haproxy_id -- bash -c "apt update && apt install -y haproxy openssl"
+# Installer HAProxy et ModSecurity
+pct exec $haproxy_id -- bash -c "
+apt update && apt install -y haproxy libmodsecurity3 libmodsecurity-dev nginx-mod-http-modsecurity git
+"
+
+# Cloner et configurer OWASP ModSecurity CRS
+pct exec $haproxy_id -- bash -c "
+git clone --depth 1 https://github.com/coreruleset/coreruleset.git /etc/haproxy/modsecurity-crs
+cp /etc/haproxy/modsecurity-crs/crs-setup.conf.example /etc/haproxy/modsecurity-crs/crs-setup.conf
+"
 
 # Générer un certificat auto-signé
 pct exec $haproxy_id -- bash -c "
@@ -50,11 +58,12 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 cat /etc/ssl/certs/haproxy.crt /etc/ssl/private/haproxy.key > /etc/ssl/certs/haproxy.pem
 "
 
-# Configurer HAProxy pour HTTPS
+# Configurer HAProxy avec ModSecurity
 pct exec $haproxy_id -- bash -c "echo '
 global
     log stdout format raw local0
     maxconn 4096
+    lua-load /usr/share/haproxy-modsecurity/modsecurity.lua
 
 defaults
     log global
@@ -64,6 +73,8 @@ defaults
 
 frontend https_front
     bind *:443 ssl crt /etc/ssl/certs/haproxy.pem
+    mode http
+    http-request lua.modsecurity
     default_backend web_servers
 
 frontend http_front
@@ -78,4 +89,4 @@ backend web_servers
 # Redémarrer HAProxy
 pct exec $haproxy_id -- systemctl restart haproxy
 
-echo "HAProxy est déployé avec succès sur $haproxy_ip"
+echo "HAProxy avec ModSecurity est déployé avec succès sur $haproxy_ip"
